@@ -1,0 +1,1042 @@
+---
+title: "Dell Project"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set()
+```
+
+# Overview
+
+  In this report I will explore, clean, and model the Raw-Data from the Dell. In the Raw-Data **Ship Mode, LOB, Origin, PO Download Date, Ship Date, and Receipt Date** are given. LOB is the type of product, Ship Mode is how the product was delivered, and Origin specifies the manufacturing site location. The objective is to create a model where **Lead Time** is the dependent variable and **Ship Mode, LOB, Origin, Quarter, and Year** are the independent variables. The following report documents my process in creating the model. 
+
+```{r library, include = FALSE}
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(fastDummies)
+library(reshape)
+library(car)
+library(readxl)
+library(tidyverse)
+density <- function(data, var) {
+  ggplot(data, aes(var)) + geom_density(na.rm = TRUE)
+}
+
+box <- function(data, var) { 
+  ggplot(data, aes(var)) + geom_boxplot(na.rm = TRUE) 
+}
+assess <- function(data) { 
+library(car)
+vif <- vif(data)
+plot <- plot(data)
+return(vif)
+return(plot)
+}
+```
+
+# Cleaning
+
+Before we can start cleaning we have to add the columns Lead Time and Manufacturing Time. Lead time is calculated by:  **Receipt Date - Ship Date**. Manufacturing Time (Man.Time) is calculated by: **Ship Date - PO Download Date**. The Manufacturing Time column is calculated to investigate bad data from the Ship Date columns to help estimate the Receipt Date column when Na's or bad data is present. The Quarter and Year columns will be added once the Receipt Date column is cleaned because those columns are calculated by referencing a Calendar sheet based on the Receipt Date. Below is a table showing the the Na's in the data set. Based on the results from the table if we clean the Manufacturing time and Lead Time columns we can create a **New Ship Date** and a **New Receipt Date** column. Then we can add the Quarter and Year columns and move on to modeling. First, however we will explore and clean Ship Mode, LOB, and Origin. 
+
+```{r read_stuff, echo = FALSE}
+Raw <- read_excel("Regression_Final_Raw.xlsx", sheet = "Raw-Data")
+Calendar <- read_excel("Regression_Final_Raw.xlsx", sheet = "Calendar")
+
+Raw <- Raw %>%
+  mutate(`Lead Time` = Raw$`Receipt Date` - Raw$`Ship Date`)
+
+Raw <- Raw %>%
+  mutate(Man.Time = Raw$`Ship Date` - Raw$`PO Download Date`)
+
+Raw$`Lead Time` <- as.numeric(Raw$`Lead Time`)
+Raw$Man.Time <- as.numeric(Raw$Man.Time)
+
+Columns <- names(Raw)
+builder <- data.frame(Columns)
+builder$NAs <- sapply(Raw, function(x) length(which(is.na(x))))
+
+knitr::kable(builder, format = "markdown")
+```
+
+## Cleaning: Ship Mode, LOB, and Orgin Columns
+
+  First we will check to see if there are any typos in the data. Ship Mode Should only contain **Ocean, Ground, Fastboat, Air**. LOB should only contain **Product A, Product B, Product C**. Origin should only contain **Site A, Site B, Site C, Site D**. Furthermore, Sites A,B, and C are in Europe and Asia and the warehouse is in the the United States so there should contain no rows where Ship Mode "Ground" is with Sites A,B, or C. In addition, Site D is in Mexico so there should be no rows where Ocean or Fast Boat is with Site D. Using the unique() function and investigating "bad" rows with the nrow() function, I found that the columns contained no typos and did not have any "bad" cases detailed above, so we can move on. Below are the results from my investigation.
+
+```{r Cat, echo = FALSE}
+unique(Raw$LOB)
+unique(Raw$Origin)
+unique(Raw$`Ship Mode`)
+# there are no typos in these variables so next check to see if data contains any implausible entries. For example since Site B, C, and A are over seas they should not have a ship mode of Ground
+nrow(Raw[Raw$`Ship Mode` == "Ground" & Raw$Origin == "Site A", ])
+nrow(Raw[Raw$`Ship Mode` == "Ground" & Raw$Origin == "Site C", ])
+nrow(Raw[Raw$`Ship Mode` == "Ground" & Raw$Origin == "Site B", ])
+nrow(Raw[Raw$`Ship Mode` == "OCEAN" & Raw$Origin == "Site D", ])
+nrow(Raw[Raw$`Ship Mode` == "FASTBOAT" & Raw$Origin == "Site D", ])
+```
+
+## Cleaning: Manufacturing Time 
+
+  In this section I will explain and show how I cleaned the Manufacturing Time column. First I created a summary of the column. The numbers are represented in days. The problematic values are negative values, Na's, and values above 100. Values cannot be negative because they cannot ship something going back in time, and manufacturing times above 100 days according to Dell are highly unlikely. I replaced the problematic values with the mean of that Manufacturing Time row inputs. For example, if there was a negative value on a row where Product A, OCEAN, and Site A were inputs, I would replace that negative value with the mean of Manufacturing Time across good values of Product A, OCEAN, and Site A. Below I have shown the before and after box plots of the uncleaned and cleaned data. 
+  
+
+
+
+
+
+
+### Manufacturing Time Before Cleaning
+
+```{r Proportions, echo=FALSE}
+summary(Raw$Man.Time/86400)
+box(Raw, Raw$Man.Time/86400)
+Na <- Raw[is.na(Raw$Man.Time), ]
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" 
+         , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" , "Man.Time"] 
+a <- a[a >= 0  , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "OCEAN"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Man.Time`), "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Man.Time`), ]
+
+# address negatives
+
+negatives <- Raw[Raw$Man.Time < 0, ]
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "AIR" & Raw$Man.Time < 0 , "Man.Time"] <- mean(a$`Man.Time`, na.rm = TRUE)
+negatives <- Raw[Raw$Man.Time < 0, ]
+
+# Address high outliers in Man Time 
+
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Man.Time"] 
+a <- a[a >= 0 & a < 8640000 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$Man.Time > 8640000 , "Man.Time"] <- mean(a$`Man.Time`)
+toohigh <- Raw[Raw$Man.Time > 8640000, ]
+
+```
+
+### Manufacturing Time After Cleaning
+
+```{r extra, echo=FALSE}
+summary(Raw$Man.Time/86400)
+box(Raw, Raw$Man.Time/86400)
+
+```
+
+
+
+## Cleaning: Lead Time 
+
+ In this section I will explain and show how I cleaned the Lead Time column. First I created a summary of the column. The numbers are represented in days. The problematic values are negative values, Na's, and values equal to 0. Values cannot be negative as they cannot receive a shipment going back in time, and Lead Times of 0 according to Dell are highly unlikely. I replaced the problematic values with the mean of that Lead  Time row inputs. For example, if there was a negative value on a row where Product A, OCEAN, and Site A were inputs, I would replace that negative value with the mean of Lead Time across good values of Product A, OCEAN, and Site A. Below I have shown the before and after box plots of the uncleaned and cleaned data. 
+ 
+### Lead Time Before Cleaning 
+  
+```{r LeadTime, echo = FALSE}
+summary(Raw$`Lead Time`/86400)
+box(Raw, Raw$`Lead Time`/86400)
+Na <- Raw[is.na(Raw$`Lead Time`), ]
+a <- Raw[Raw$LOB == "Product B" & 
+    Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" 
+      , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+        Raw$Origin == "Site D" &
+        Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "OCEAN", "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "OCEAN"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR", "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR"  & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ] 
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "AIR", "Lead Time"] 
+a <- a[a > 0 , ] 
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "AIR" & is.na(Raw$`Lead Time`), "Lead Time"] <- mean(a$`Lead Time`, na.rm = TRUE)
+Na <- Raw[is.na(Raw$`Lead Time`), ]
+
+#          Columns NAs
+#1              LOB   0
+#2           Origin   0
+#3        Ship Mode   0
+#4 PO Download Date   0
+#5        Ship Date 150
+#6     Receipt Date 150
+#7        Man.Time    0
+#9        Lead Time   0
+
+# No more Na's for Lead Time now work on negatives 
+
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site B" &
+           Raw$`Ship Mode` == "OCEAN", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site B" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site C" &
+           Raw$`Ship Mode` == "AIR" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site C" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product A" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "OCEAN" , "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "OCEAN" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+a <- Raw[Raw$LOB == "Product C" & 
+           Raw$Origin == "Site A" &
+           Raw$`Ship Mode` == "FASTBOAT", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product C" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "FASTBOAT" & Raw$`Lead Time` < 0, "Lead Time"] <- mean(a$`Lead Time`)
+negatives <- Raw[Raw$`Lead Time` < 0, ]
+
+
+# address two 0 rows 
+
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product A" & 
+      Raw$Origin == "Site A" &
+      Raw$`Ship Mode` == "AIR" & Raw$`Lead Time` == 0, "Lead Time"] <- mean(a$`Lead Time`)
+
+a <- Raw[Raw$LOB == "Product B" & 
+           Raw$Origin == "Site D" &
+           Raw$`Ship Mode` == "GROUND", "Lead Time"] 
+a <- a[a > 0, ]
+Raw[Raw$LOB == "Product B" & 
+      Raw$Origin == "Site D" &
+      Raw$`Ship Mode` == "GROUND" & Raw$`Lead Time` == 0, "Lead Time"] <- mean(a$`Lead Time`)
+
+
+```
+
+### Lead Time After Cleaning
+
+```{r vop, echo=FALSE}
+summary(Raw$`Lead Time`/86400)
+box(Raw, Raw$`Lead Time`/86400)
+```
+
+## Cleaning: Adding New Ship date and New Reciept date Columns
+
+Next I added the New Ship Date and Receipt Date columns after my Lead Time and Manufacturing Time were fully cleaned. I did this by adding the Manufacturing time column to PO Download Date and then adding the Lead Time to the New Ship Date column. This will allow me to have a cleaned New Receipt Date column I can calculate the Quarter and Year columns off of. 
+
+```{r crap, echo=FALSE}
+Raw <- Raw %>%
+  mutate("New Ship Date" = Raw$`PO Download Date` + Raw$Man.Time) 
+
+Raw <- Raw %>%
+  mutate("New Receipt Date" = Raw$`New Ship Date` + Raw$`Lead Time`)
+
+Raw$`New Ship Date` <- trunc(Raw$`New Ship Date`, "day")
+
+Raw$`New Receipt Date` <- trunc(Raw$`New Receipt Date`, "day")
+
+Raw <- Raw[ , -(5:6)]
+
+```
+### Cleaning: Adding Quarter and Year Columns and Checking for Na's Again 
+
+I added the Quarter and Year columns by creating a loop that referenced a Calender sheet Dell provided, using the New Receipt Date column as the input. Then I checked if the Quarter column only contained the entries **Q1, Q2, Q3, Q4** and if the Year column only contained **2019, 2020**. Lastly, I checked the data for Na's again. There are no Na's and the Quarter and Year columns contain no typos or bad inputs so I can move on.
+
+```{r SalePrice new graph, echo = FALSE }
+Raw$Quarter <- NA
+Raw$Year <- NA
+
+i <- 1
+while( i <= nrow(Calendar)) {
+  Raw$Quarter <-  ifelse(Raw$`New Receipt Date` >= Calendar$Start_Date[i] & Raw$`New Receipt Date` <= Calendar$End_date[i], Calendar$Quarter[i], Raw$Quarter) 
+  Raw$Year  <- ifelse(Raw$`New Receipt Date` >= Calendar$Start_Date[i] & Raw$`New Receipt Date` <= Calendar$End_date[i], Calendar$Year[i], Raw$Year) 
+  i <- i + 1
+}
+unique(Raw$Quarter)
+unique(Raw$Year)
+Columns <- names(Raw)
+builder <- data.frame(Columns)
+builder$NAs <- sapply(Raw, function(x) length(which(is.na(x))))
+knitr::kable(builder, format = "markdown")
+
+```
+
+## Cleaning: Lead Time Transformation and Removing Date Columns
+
+Next after I cleaned all of the data, I transformed the Lead Time column to make it more normal and remove the date columns. The Original lead time column was skewed right and a cube root function made it more normal. Square rooting Lead Time or Logging Lead Time made the R^2 worst so that is why I settled with the cube root transformation. Below are the results. After I transformed the Lead Time column I removed the Date Columns and Manufacturing Time column. 
+
+### Original Lead Time Distribution
+
+```{r code, echo=FALSE}
+
+Raw <- Raw[ , -c(4,6,7,8)]
+Raw$`Lead Time` <- Raw$`Lead Time`/86400
+density(Raw, Raw$`Lead Time`)
+Raw$`Lead Time` <- Raw$`Lead Time`^(1/3)
+
+```
+
+### Transformed Lead Time Distribution
+
+```{r bop, echo=FALSE}
+density(Raw, Raw$`Lead Time`)
+```
+
+## Cleaning : One-Hot encode and Extract the Model Data from the Raw Data
+
+Next I will one hot encode the the categorical variables and create my model data by removing the original categorical columns. Below is a sample of what the model_data looks like excluding 15 additional predictors.  
+
+```{r variables, echo = FALSE}
+Raw <- dummy_cols(Raw, select_columns = c("LOB", "Origin", 
+                  "Ship Mode", "Quarter", "Year"))
+
+model_data <- Raw[ , -c(1:3, 5:6)]
+Table <- head(model_data)
+Table <- Table[ , 1:4]
+knitr::kable(Table, format = "markdown")
+```
+
+# Modeling
+
+
+
+## Modeling: Correlation Table with Predictors and Lead Time
+
+Below is a table of correlations between the predictors and Lead Time in absolute descending order. 
+
+```{r example, echo = FALSE}
+Columns <- names(model_data)
+builder <- data.frame(Columns)
+builder$Correlation <- sapply(model_data, function(x) cor(x, Raw$`Lead Time`))
+
+builder <- builder %>%
+  arrange(desc(abs(Correlation)))
+knitr::kable(builder, format = "markdown")
+```
+
+## Modeling: Correlation Plot
+
+Below is a correlation plot of the predictors and Lead Time. 
+
+```{r Matrix, echo = FALSE, warning=FALSE}
+cor_matrix  <- round(cor(model_data),2)   
+
+
+ut <- function(cor_matrix){ 
+  cor_matrix[lower.tri(cor_matrix)] <- NA
+  return(cor_matrix) }
+
+lt <- ut(cor_matrix)
+mc <- melt(lt, na.rm = TRUE)
+
+# the correlation plot 
+ggplot(data = mc, aes(X2, X1, fill = value)) + geom_tile(color = "white") +
+  theme(axis.text.x = element_text(angle = 90))
+
+
+# find correlations between predictors greater than .6 (absolute)
+
+```
+
+## Modeling: Table with Predictors Pairs Absolute Correlation above .60
+
+Below is a table of correlations in absolute descending order above .6 between predictor pairs. 
+
+```{r hug, echo=FALSE}
+
+cor_matrix <- as.data.frame(cor_matrix)
+
+
+cor_matrix <- gather(cor_matrix, varX, Cor, `Lead Time`:Year_2020)
+
+
+cor_matrix <- cor_matrix %>%
+  mutate( varY = rep(Columns, 18)) 
+
+Cor_significant <- cor_matrix %>%
+  filter(abs(Cor) > .6) %>%
+  arrange(desc(abs(Cor))) 
+
+Cor_significant <- Cor_significant[Cor_significant$varX
+                                   != Cor_significant$varY, ]
+
+Cor_significant <- Cor_significant[!grepl("Lead Time", 
+                                          Cor_significant$varX), ]
+
+Cor_significant <- Cor_significant[!grepl("Lead Time", 
+                                          Cor_significant$varY), ]
+
+knitr::kable(Cor_significant, format = "markdown")
+```
+
+## Modeling : Creating Summary of Model 
+
+The first summary contains NA's because of perfect multicollinearity so removing those I got the second model. Then I handed selected predictors using the tables above to pick the highest correlated variables while being cautious of the multicollinearity and got the third model. 
+
+### First Model 
+
+
+The first model yielded me Na's due to perfect multicollinearity which did not allow me to run the function vifs() to explore the multicollinearity values. Normally R automatically drops a level to solve this issue, but R did not seem to automatically drop a level so I proceeded to create the second model removing the Na's to calculate the vifs and observe the model plots. Therefore the predictors chosen for the second model was essentially chosen by R due to perfect multicollinearity.
+
+```{r corr, echo = FALSE}
+summary(model <- lm(`Lead Time` ~., data = model_data))
+
+```
+
+### Second Model with Assessment
+
+The second model yielded me the same R^2 as the first model. The results show that the residuals are normally distributed with the median close to 0 and the Max and Min roughly the same distance away from the median. The plots do not show extreme heteroskedasticity but the residuals seem to primarily reside above 0. The vifs were extremely high with the Quarter 1 and Quarter 3 predictors containing values above 1000. In addition Product A and Product B both had vifs above 10 and 20 respectively. Site A had a high vif of 9 as well. These predictors need to be combined or removed to address the mutlicollinearity when creating an optimal model. Next I created an optimal model addressing the multicollinearity problem. 
+
+```{r ecb, echo=FALSE, warning=FALSE}
+model_data <- model_data[ , -c(4,8,11,12,16,17,18)]
+summary(model.bad <- lm(`Lead Time` ~., data = model_data))
+assess(model.bad)
+```
+
+### Third Model with Assessment
+
+This model was created by combining all predictors pairs that had correlations above .6. However I did not remove any original columns, I simply added the newly combine columns to the end of the model_data set.  Then after I added those columns to the model_data I selected predictors one at a time guessing and checking trying to achieve the highest possible R^2. I started with Ship Mode_Ocean and added predictors from there making sure no highly correlated predictor pairs were in the model. The residuals for this model are nearly normally distributed. The median is close to 0 and the max and min are close to the same distance apart with the max being slightly further. The R^2 was lower than the first and second model and the RSE was slightly higher. The residuals tended to primarily be above 0 so there could be slight heteroskedasticity. The vifs,  however,  were excellent as there was no value was above 2 which means no multicollinearity is present in the model. 
+
+```{r fhj, echo=FALSE, warning=FALSE}
+model_data <- Raw[ , -c(1:3, 5:6)]
+model_data$GROUND.OriginD <- Raw$`Origin_Site D`*Raw$`Ship Mode_GROUND`
+
+model_data$ProductA.OriginA <- Raw$`LOB_Product A`+ Raw$`Origin_Site A`
+
+model_data$OCEAN.OriginB <- Raw$`Ship Mode_OCEAN` + Raw$`Origin_Site B` 
+
+model_data$Q4.2019 <- Raw$Quarter_Q4 + Raw$Year_2019
+
+#cor(model_data$OCEAN.B, Raw$`Lead Time`)
+# select the predictors I want in model 
+
+model_data <- model_data[ , c(1, 4, 5, 10, 12,13, 15, 19, 22)]
+
+
+# run the model 
+
+summary(model.good <- lm(`Lead Time` ~., data = model_data))
+assess(model.good)
+```
